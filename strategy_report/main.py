@@ -74,14 +74,14 @@ Carmine              = 1192
 Lillie_Determination = 1227
 Boss_Orders          = 1182
 Switch_Card          = 1123
-Rare_Candy           = 1124  # approximate
+Rare_Candy           = 1079
 Grand_Tree           = 1249  # ACE SPEC Stadium
 Hero_Cape            = 1159  # ACE SPEC Tool
 Maximum_Belt         = 1158
 Prime_Catcher        = 1088
 Master_Ball          = 1125
 Dusk_Ball            = 1102
-Ultra_Ball           = 1103
+Ultra_Ball           = 1121
 Poke_Pad             = 1152
 Firebreather         = 1232
 
@@ -101,9 +101,8 @@ agent_state = {
     "plan": AttackPlan(),
     "pre_turn": 0,
     "phase": "opening",
-    "opponent_active_ids": defaultdict(int),   # Track opponent active Pokémon across games
-    "opponent_attack_count": 0,                # How many times opponent has attacked this game
-    "opponent_archetype": "unknown",           # aggrieved/stage2/control
+    "opponent_seen_ids": defaultdict(int),     # All opponent Pokémon IDs seen (active + bench)
+    "opponent_archetype": "unknown",           # aggro/stage2/control
     "games_played": 0,
 }
 
@@ -146,18 +145,28 @@ def classify_phase(turn: int, my_prizes: int, opp_prizes: int,
     return "aggression"
 
 
-def detect_opponent_archetype(opp_active_ids: dict, opp_attack_count: int, turn: int) -> str:
-    """Classify opponent deck archetype from observed behavior."""
-    # Aggro: attacks early (turn 1-2) with Basic Pokémon ex
-    if opp_attack_count >= 2 and turn <= 3:
+# Card IDs known to belong to each archetype (from card database analysis)
+AGGRO_IDS = {46, 210, 44, 313, 336, 184, 179, 1062, 328, 249, 920}  # Basic ex attackers
+STAGE2_IDS = {932, 652, 904, 747, 772, 790, 928, 939, 569, 381}      # Stage 2/Mega
+CONTROL_IDS = {37, 56, 74, 1247}  # Iron Thorns ex, Flutter Mane, Rabsca, Neutralization Zone
+
+def detect_opponent_archetype(seen_ids: dict, turn: int) -> str:
+    """Classify opponent deck from observed Pokémon IDs."""
+    scores = {"aggro": 0, "stage2": 0, "control": 0}
+    for cid, count in seen_ids.items():
+        if cid in CONTROL_IDS:
+            scores["control"] += count * 3
+        elif cid in AGGRO_IDS:
+            scores["aggro"] += count
+        elif cid in STAGE2_IDS:
+            scores["stage2"] += count
+    # Early-game: if opponent has played Basics but not evolved, likely aggro
+    if turn >= 3 and scores["aggro"] > scores["stage2"] and scores["aggro"] > 0:
         return "aggro"
-    # Stage 2: hasn't attacked by turn 4 — setting up evolutions
-    if opp_attack_count == 0 and turn >= 4:
+    if scores["stage2"] > scores["aggro"] and scores["stage2"] > 0:
         return "stage2"
-    # If opponent has played Iron Thorns ex or similar ability-lock
-    for cid, count in opp_active_ids.items():
-        if cid in (37,):  # Iron Thorns ex
-            return "control"
+    if scores["control"] > 0:
+        return "control"
     return "unknown"
 
 
@@ -182,8 +191,8 @@ PHASE_WEIGHTS = {
 }
 
 
-def score_action(o, obs, my_state, my_index, phase, discard_counts, my_prize):
-    """Score a single action option based on type, phase, and board state."""
+def score_action(o, obs, my_state, my_index, phase, discard_counts, my_prize, opp_arch="unknown"):
+    """Score a single action option based on type, phase, board state, and opponent archetype."""
     score = 0
     opt_type = o.type
     
@@ -192,23 +201,14 @@ def score_action(o, obs, my_state, my_index, phase, discard_counts, my_prize):
         
         active = my_state.active[0] if (my_state.active and len(my_state.active) > 0) else None
         if active:
-            # Mega Emboar ex attack bonuses
             if active.id == Mega_Emboar_ex:
-                if o.attackId == 1000:  # Crimson Blast (approximate)
-                    # Bonus for energy available in discard
-                    energy_bonus = min(3, discard_counts[Basic_Fire_Energy]) * 60
-                    score += energy_bonus
-                    # In endgame, prioritize finishing
-                    if my_prize <= 2:
-                        score += 5000
-                else:
-                    score += 1000  # Secondary attack
-            
-            # Gouging Fire ex
+                # Crimson Blast: bonus for energy in discard (energy recovery synergy)
+                energy_bonus = min(3, discard_counts[Basic_Fire_Energy]) * 60
+                score += energy_bonus
+                if my_prize <= 2:
+                    score += 5000  # Endgame: prioritize finishing
             elif active.id == Gouging_Fire_ex:
                 score += 1500
-            
-            # Regular Emboar
             elif active.id == Emboar:
                 score += 800
     
@@ -218,10 +218,8 @@ def score_action(o, obs, my_state, my_index, phase, discard_counts, my_prize):
             card = get_card(obs, AreaType.HAND, o.index, my_index)
             if card and card.id == Basic_Fire_Energy:
                 score += 3000
-                # Prefer attaching to active in opening/development
                 if o.inPlayArea == AreaType.ACTIVE and phase in ("opening", "development"):
                     score += 1500
-                # In development, prefer attaching to bench (for Mega Emboar)
                 if o.inPlayArea == AreaType.BENCH and phase == "development":
                     score += 1000
     
@@ -230,7 +228,6 @@ def score_action(o, obs, my_state, my_index, phase, discard_counts, my_prize):
             score += PHASE_WEIGHTS[phase]["EVOLVE"]
             card = get_card(obs, AreaType.HAND, o.index, my_index)
             if card:
-                # Prioritize evolving into Mega Emboar ex
                 if card.id == Mega_Emboar_ex:
                     score += 4000
                 elif card.id == Pignite:
@@ -243,25 +240,22 @@ def score_action(o, obs, my_state, my_index, phase, discard_counts, my_prize):
             card = get_card(obs, AreaType.HAND, o.index, my_index)
             if card:
                 cid = card.id
-                # Draw supporters — highest priority in opening
                 if cid in (Carmine, Lillie_Determination):
                     score += PHASE_WEIGHTS[phase]["DRAW"]
-                # Search cards
                 elif cid in (Master_Ball, Dusk_Ball, Ultra_Ball):
                     score += PHASE_WEIGHTS[phase]["SEARCH"]
-                # Boss's Orders — high priority in aggression/endgame
                 elif cid == Boss_Orders:
                     score += PHASE_WEIGHTS[phase]["BOSS"]
-                # Stadium (Grand Tree for evolution acceleration)
                 elif cid == Grand_Tree:
                     score += 2500 if phase in ("opening", "development") else 500
-                # Tools
-                elif cid in (Hero_Cape, Maximum_Belt):
-                    score += 1500
-                # Energy search
+                elif cid == Hero_Cape:
+                    # Prioritize Hero's Cape against aggro (survive their first hit)
+                    score += 2500 if opp_arch == "aggro" else 1500
+                elif cid == Maximum_Belt:
+                    # Maximum Belt against stage2/control (need extra damage)
+                    score += 2000 if opp_arch in ("stage2", "control") else 1200
                 elif cid == Firebreather:
                     score += 2000 if phase in ("opening", "development") else 800
-                # Generic fallback
                 else:
                     score += 300
     
@@ -293,29 +287,31 @@ def agent(obs_dict: dict) -> list[int]:
     opp_state = state.players[opp_index]
     opp_prize = len(opp_state.prize) if opp_state.prize else 0
     
-    # Track opponent active Pokémon
-    if opp_state.active and len(opp_state.active) > 0:
-        agent_state["opponent_active_ids"][opp_state.active[0].id] += 1
+    # Track all opponent Pokémon seen (active + bench)
+    if opp_state.active:
+        for p in opp_state.active:
+            agent_state["opponent_seen_ids"][p.id] += 1
+    if opp_state.bench:
+        for p in opp_state.bench:
+            agent_state["opponent_seen_ids"][p.id] += 1
     
     # Reset on new turn
     if agent_state["pre_turn"] != state.turn:
         agent_state["pre_turn"] = state.turn
         agent_state["plan"] = AttackPlan()
     
-    # Detect opponent archetype
+    # Detect opponent archetype from observed Pokémon
     agent_state["opponent_archetype"] = detect_opponent_archetype(
-        agent_state["opponent_active_ids"],
-        agent_state["opponent_attack_count"],
-        state.turn
+        agent_state["opponent_seen_ids"], state.turn
     )
+    opp_arch = agent_state["opponent_archetype"]
     
     # Classify game phase
     active_id = my_state.active[0].id if (my_state.active and len(my_state.active) > 0) else -1
     bench_ids = [p.id for p in my_state.bench] if my_state.bench else []
     has_emboar = (active_id == Mega_Emboar_ex) or (Mega_Emboar_ex in bench_ids)
     
-    phase = classify_phase(state.turn, my_prize, opp_prize, has_emboar,
-                           agent_state["opponent_archetype"])
+    phase = classify_phase(state.turn, my_prize, opp_prize, has_emboar, opp_arch)
     agent_state["phase"] = phase
     
     # Count discard for energy acceleration decisions
@@ -330,12 +326,8 @@ def agent(obs_dict: dict) -> list[int]:
         best_score = -100000
         
         for i, o in enumerate(select.option):
-            # Track opponent attacks for archetype detection
-            if o.type == OptionType.ATTACK:
-                agent_state["opponent_attack_count"] += 1
-            
             current_score = score_action(o, obs, my_state, my_index, phase, 
-                                         discard_counts, my_prize)
+                                         discard_counts, my_prize, opp_arch)
             if current_score > best_score:
                 best_score = current_score
                 best_idx = i
