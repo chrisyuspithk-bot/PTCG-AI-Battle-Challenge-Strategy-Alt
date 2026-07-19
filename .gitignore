@@ -1,0 +1,5 @@
+EN_Card_Data.csv
+*.pkl
+best_deck_*.csv
+evolution_progress.png
+__pycache__/
