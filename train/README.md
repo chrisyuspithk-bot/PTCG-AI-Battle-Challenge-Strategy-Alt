@@ -1,106 +1,155 @@
 # Training Framework
 
-Three tools to automatically find better decks and agents using your simulator.
+Three tools that use your simulator as a black-box fitness function to automatically find better decks and agents.
 
 ## Setup
 
 ```bash
-pip install pandas numpy
+pip install pandas numpy matplotlib
 ```
 
-Place `EN_Card_Data.csv` (from Kaggle competition data) in the `train/` directory.
+The card database CSV is already in this directory. If it's missing, copy `EN_Card_Data.csv` from the Kaggle competition dataset.
 
-## 1. Deck Search (`deck_search.py`)
+---
 
-Evolutionary algorithm that finds the optimal 60-card deck.
+## 1. Deck Search — `deck_search.py`
 
-**How it works:**
-- Population of 50 random decks
-- Each generation: evaluate all decks in your simulator, keep best 5
-- Create next generation via crossover + mutation
-- 200 generations = 10,000 deck evaluations
+Genetic algorithm that finds the optimal 60-card deck.
 
-**To use:**
+### How it works
+
+```
+Population of 50 decks
+    ↓
+Evaluate each deck in your simulator (win rate)
+    ↓
+Keep top 5 (elitism)
+    ↓
+Crossover + mutate to create 45 new decks
+    ↓
+Repeat 200 generations
+    ↓
+Best deck found
+```
+
+### Features
+
+| Feature | What it does |
+|---|---|
+| Evolution chains | Auto-adds pre-evolutions to seed decks, removes orphaned evolutions from mutations |
+| Fitness cache | Identical deck compositions evaluated once |
+| Duplicate prevention | No two decks in population are the same |
+| Checkpoints | Saves every 10 gens — survives crashes, resumes where it left off |
+| Early stopping | Halts after 30 generations without improvement |
+| Seed decks | Starts with 6 known-good decks (Gouging Fire ex, Mega Lucario ex, etc.) |
+| Progress chart | Outputs `evolution_progress.png` |
+
+### Integration — the only code you write
+
+Open `deck_search.py`, find `evaluate_deck()` at ~line 325, and replace it:
 
 ```python
-# Edit deck_search.py, replace dummy_evaluate():
+# Add your known opponent decks here
+OPPONENT_DECKS = [
+    # list of 60 card IDs each — decks your simulator can play against
+]
+
 def evaluate_deck(deck):
+    """deck: list of 60 card IDs → returns win rate 0.0 to 1.0"""
+    
     # Save deck to temp file
-    with open('/tmp/deck.csv', 'w') as f:
+    with open('/tmp/test_deck.csv', 'w') as f:
         for cid in deck:
             f.write(f'{cid}\n')
     
-    # Run your simulator
     wins = 0
-    for opponent_deck in OPPONENT_DECKS:
-        result = run_simulator('/tmp/deck.csv', opponent_deck, games=10)
+    total = 0
+    for opp_deck in OPPONENT_DECKS:
+        with open('/tmp/opp_deck.csv', 'w') as f:
+            for cid in opp_deck:
+                f.write(f'{cid}\n')
+        
+        # CALL YOUR SIMULATOR HERE
+        result = your_simulator.run(
+            deck1='/tmp/test_deck.csv',
+            deck2='/tmp/opp_deck.csv',
+            games=10,                     # per matchup
+            position_balanced=True,       # equal P1/P2
+        )
         wins += result.wins
-    return wins / (len(OPPONENT_DECKS) * 10)
-
-# Then run:
-best_deck, fitness, history = run_evolution(evaluate_deck)
-save_deck(best_deck)
+        total += result.games
+    
+    return wins / total if total > 0 else 0.0
 ```
 
-**Expected runtime:** ~2-8 hours depending on simulator speed. Run overnight.
+Then:
+```bash
+python3 deck_search.py
+```
 
-## 2. Weight Tuner (`weight_tuner.py`)
+### Runtime estimate
 
-Optimizes the phase weight matrix (5 phases × 6 actions = 30 parameters).
+At 1,500 games/sec with 3 opponents × 10 games each = 30 games per eval:
+- 50 decks × 30 games = 1,500 games per generation ≈ **1 second**
+- 200 generations ≈ **3-4 minutes**
 
-**How it works:**
+More opponents or games per eval = proportionally longer. Run overnight for thorough search.
+
+### Output
+
+```
+best_deck_gen042.csv     # Saved each time a better deck is found
+best_deck_final.csv      # Final best deck
+evolution_progress.png   # Fitness over generations chart
+evo_checkpoint.pkl       # Resume file (auto-saved every 10 gens)
+```
+
+---
+
+## 2. Weight Tuner — `weight_tuner.py`
+
+Optimizes the 30 phase weights (5 phases × 6 action types).
+
+### How it works
+
 - 30% random exploration, 70% hill climbing with restarts
-- Each iteration: mutate weights → test in simulator → keep if better
+- Mutates weights → tests in simulator → keeps improvements
+- Simulated annealing: occasionally accepts worse weights to escape local optima
 - 500 iterations recommended
 
-**To use:**
+### Integration
 
-```python
-# Edit weight_tuner.py, replace dummy_evaluate():
-def evaluate_weights(weights):
-    # Write weights into main.py
-    write_weights_to_agent(weights, '../agent/main.py')
-    
-    # Run simulator
-    result = run_simulator('../agent/main.py', '../agent/deck.csv', 
-                          OPPONENT_DECKS, games=50)
-    return result.win_rate
+Replace `dummy_evaluate()` with a function that writes weights into `main.py` and runs your simulator. See inline comments at ~line 190.
 
-# Then run:
-best_w, fitness, history = optimize(evaluate_weights, iterations=500)
-# Copy the printed W = {...} into main.py
-```
+### Runtime
 
-**Expected runtime:** ~1-3 hours.
+~1-3 hours depending on games per evaluation.
 
-## 3. RL Policy (`rl_policy.py`)
+---
 
-Trains a neural network to make decisions via self-play.
+## 3. RL Policy — `rl_policy.py`
 
-**Architecture:** 20 input features → 32 hidden → 1 output score.
+Trains a neural network (20→32→1) to score actions via self-play.
 
-**How it works:**
-- Self-play: policy plays against itself, collects (state, action, reward)
-- Train: regress state features → game outcome
-- Export: hardcoded numpy arrays → paste into main.py (no imports needed)
+Exports as hardcoded Python arrays — zero imports needed, runs on Kaggle.
 
-**To use:** This requires integrating your simulator into the training loop. See `rl_policy.py` inline comments.
+This requires deeper simulator integration. See inline comments.
 
-**Expected runtime:** 5-20 hours for meaningful training.
+---
 
 ## Recommended Workflow
 
-```
-Day 1:  deck_search.py  → find best deck       (overnight)
-Day 2:  weight_tuner.py → optimize weights      (afternoon)
-Day 3+: rl_policy.py    → train neural policy   (optional, higher ceiling)
-```
+| Order | Tool | When | Output |
+|---|---|---|---|
+| 1 | `deck_search.py` | Overnight | Optimal 60-card deck |
+| 2 | `weight_tuner.py` | Next day | Tuned phase weights |
+| 3 | `rl_policy.py` | Optional | Neural decision policy |
 
-Each tool builds on the previous — the best deck from step 1 becomes the baseline for step 2, etc.
+Each builds on the previous — the best deck from step 1 feeds into step 2, etc.
 
-## Tips
+## Important
 
-- **Diverse opponents:** Test against multiple deck archetypes, not just mirrors
-- **Position balancing:** Equal games going first and second
-- **Enough games:** At least 50 per evaluation for deck search, 100+ for weight tuning
-- **Save checkpoints:** Each tool prints progress — pipe to a log file
+- **Diverse opponents**: test against multiple archetypes, not just mirror matches
+- **Position balancing**: equal games going first and second
+- **Enough games**: ≥ 30 per evaluation for deck search, ≥ 50 for weight tuning
+- **Checkpoints work**: kill the process anytime, restart resumes from last save
