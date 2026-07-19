@@ -1,27 +1,28 @@
-# PTCG AI Battle Challenge — Strategy Category
+# PTCG AI Battle Challenge
 
-Submission for the [Pokémon TCG AI Battle Challenge](https://www.kaggle.com/competitions/pokemon-tcg-ai-battle) Strategy Category.
+[Kaggle Competition](https://www.kaggle.com/competitions/pokemon-tcg-ai-battle)
 
-## Contents
+## Agent
 
 ```
-├── STRATEGY_REPORT.md      # Kaggle Writeup (Discovery Arc narrative)
-├── main.py                 # Phase-aware heuristic agent
-├── deck.csv                # 60-card Mega Emboar ex deck
-└── figures/                # 9 data-driven charts
+agent/
+├── main.py      # Gouging Fire ex aggro — phase-aware heuristic agent
+└── deck.csv     # 60-card deck (4 Gouging Fire ex, 3 Chi-Yu, 20 Fire Energy, trainers)
 ```
 
-## Strategy
+**Deck:** Gouging Fire ex (230 HP, 260 DMG, 2 Energy) — fast Basic-ex beatdown. No evolution dependency.
 
-**Deck:** Mega Emboar ex (380 HP, 320 DMG, 2 Energy) — the mathematically optimal attacker in the 2,022-card format.
+**Architecture:** Phase-aware scoring (opening/development/aggression/endgame) + opponent archetype detection + adaptive tool priority.
 
-**Architecture:** Phase-aware decision system that dynamically reweights actions based on game stage (Opening → Development → Aggression → Endgame), with opponent archetype detection.
+## Iterate
 
-**Report:** Hypothesis-driven investigation documenting two rejected approaches and the data analysis that revealed the optimal solution.
+1. Test in simulator
+2. Tweak `W` weights in `main.py`
+3. Adjust deck ratios in `deck.csv`
+4. Submit to Kaggle (5/day max)
 
-## Submission
+## Submit
 
-Two-part entry required:
-
-1. **Simulation Category** — `tar -czvf submission.tar.gz main.py deck.csv cg/`
-2. **Strategy Category** — Paste `STRATEGY_REPORT.md` into a Kaggle Writeup, attach figures to Media Gallery
+```bash
+tar -czvf submission.tar.gz main.py deck.csv cg/
+```
